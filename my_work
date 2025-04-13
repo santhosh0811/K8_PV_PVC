@@ -1,0 +1,203 @@
+sudo mkdir -p /mnt/data
+sudo chmod 777 /mnt/data
+
+label clour=red
+
+jenkins-pv.yml
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: colour
+              operator: In
+              values:
+                - red
+================================
+jenkins-pvc.yml
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual	
+
+=================================
+jenkins-deployment-pv.yml 
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-deployment
+  labels:
+    app: myjenkins  
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: myjenkins
+  template:
+    metadata:
+      labels:
+        app: myjenkins  
+    spec:
+      volumes:
+        - name: local-volume
+          persistentVolumeClaim:
+            claimName: local-pvc
+      containers:
+      - name: jenkins
+        image: jenkins/jenkins:latest
+        volumeMounts: 
+        - mountPath: /var/jenkins_home
+          name: local-volume
+        ports:
+        - containerPort: 8080
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0  
+
+=================================================		
+snap install helm --classic
+
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/
+
+helm upgrade --install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \
+  --namespace kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.name=efs-csi-controller-sa
+
+
+jenkins-efs-staticvolume-pv.yml
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-static-pv
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-06bcae7ec6c9c80f6  # or fsap-abcdef1234567890 for access point
+===============================================================
+	
+jenkins-efs-staticvolume-pvc.yml	
+	
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-static-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: ""  # Must match the PV	
+  
+ ======================================= 
+  
+  
+jenkins-deployment-efs.yml 
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-deployment
+  labels:
+    app: myjenkins  
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: myjenkins
+  template:
+    metadata:
+      labels:
+        app: myjenkins  
+    spec:
+      volumes:
+        - name: local-volume
+          persistentVolumeClaim:
+            claimName: efs-static-pvc
+      containers:
+      - name: jenkins
+        image: jenkins/jenkins:latest
+        volumeMounts: 
+        - mountPath: /var/jenkins_home
+          name: local-volume
+        ports:
+        - containerPort: 8080
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0  
+ =====================================================
+  
+jenkins-ebs-staticvolume-pv.yml
+    
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ebs-static-pv
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  awsElasticBlockStore:
+    volumeID: vol-0123456789abcdef0
+    fsType: ext4
+	
+	
+jenkins-ebs-staticvolume-pvc.yml
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-static-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: ""	
+	
