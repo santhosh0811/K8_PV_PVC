@@ -1,0 +1,335 @@
+Static PV & PVC (Bare Metal)
+
+Create a directory on the node
+
+sudo mkdir -p /mnt/data
+sudo chmod 777 /mnt/data
+
+
+PersistentVolume (PV)
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/data
+
+
+
+ PersistentVolumeClaim (PVC)
+
+ apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual
+
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-demo
+spec:
+  containers:
+    - name: busybox
+      image: busybox
+      command: [ "sleep", "3600" ]
+      volumeMounts:
+        - name: local-storage
+          mountPath: /data
+  volumes:
+    - name: local-storage
+      persistentVolumeClaim:
+        claimName: local-pvc
+
+
+
+
+kubectl apply -f pv.yaml
+kubectl apply -f pvc.yaml
+kubectl apply -f pod.yaml
+
+
+
+kubectl get pv
+kubectl get pvc
+kubectl describe pvc local-pvc
+kubectl exec -it pvc-demo -- sh
+
+cd /data
+echo "hello" > test.txt
+
+hostPath works well on single-node clusters.
+
+For multi-node bare metal setups, consider:
+
+NFS (shared storage over network)
+
+GlusterFS, Ceph, or Longhorn (more robust solutions)
+
+persistentVolumeReclaimPolicy: Retain keeps the data even if the PVC is deleted.
+==================================================================================
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - <your-node-name>
+=====================================================================
+Key Concepts
+EFS is a network file system that supports multi-AZ, multi-node mounting.
+
+Kubernetes uses the EFS CSI Driver to mount EFS volumes into pods.
+
+With static provisioning, you create the EFS file system yourself, and point the PV to it.
+
+
+Prerequisites
+AWS EFS file system created ✅
+
+EFS CSI driver installed on your cluster ✅
+
+Access point (optional but recommended) ✅
+
+Security groups and subnets configured ✅
+
+
+ Install the EFS CSI Driver (if not already installed)
+
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/
+helm upgrade --install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \
+  --namespace kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.name=efs-csi-controller-sa
+
+
+
+aws efs create-file-system --region us-east-1
+
+
+ Copy the File System ID, e.g., fs-12345678.
+
+
+  (Optional) Create an EFS Access Point
+
+  aws efs create-access-point \
+  --file-system-id fs-12345678 \
+  --posix-user Uid=1000,Gid=1000 \
+  --root-directory 'Path=/eks,CreationInfo={OwnerUid=1000,OwnerGid=1000,Permissions=755}'
+
+
+  Note the Access Point ID, e.g., fsap-abcdef1234567890.
+
+
+  PersistentVolume (PV) — Static Provisioning
+
+  apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-static-pv
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-12345678  # or fsap-abcdef1234567890 for access point
+
+
+    Use the access point ID as volumeHandle if you're using one.
+
+
+    apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-static-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: ""  # Must match the PV
+
+
+
+  apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-test-pod
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command: [ "sleep", "3600" ]
+      volumeMounts:
+        - name: efs-volume
+          mountPath: /data
+  volumes:
+    - name: efs-volume
+      persistentVolumeClaim:
+        claimName: efs-static-pvc
+
+
+
+
+ReadWriteMany	EFS supports it — great for multi-node sharing
+✅ Good for	WordPress, shared caches, config files, etc.
+🔐 IAM Permissions	Your worker nodes need the correct IAM role/policy to access EFS
+🌐 Network Access	Security groups/subnets must allow EFS NFS access (port 2049)
+🔄 Reclaim Policy	Retain keeps the EFS volume even if PVC is deleted
+==============================================================================
+Static EBS Provisioning Steps
+
+
+✅ Manually create an EBS volume in AWS (via console or CLI).
+
+✅ Attach it to a specific EC2 instance (node).
+
+✅ Format and mount it on that node.
+
+✅ Create a PV that points to the EBS volume ID.
+
+✅ Create a PVC that matches the PV.
+
+✅ Mount it in a pod.
+
+
+aws ec2 create-volume \
+  --availability-zone us-east-1a \
+  --size 5 \
+  --volume-type gp3
+
+aws ec2 attach-volume \
+  --volume-id vol-0123456789abcdef0 \
+  --instance-id i-0abc123def456ghij \
+  --device /dev/xvdf
+
+
+sudo mkfs.ext4 /dev/xvdf
+sudo mkdir -p /mnt/ebs
+sudo mount /dev/xvdf /mnt/ebs
+sudo chmod 777 /mnt/ebs
+
+
+Create the PersistentVolume (PV)
+
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ebs-static-pv
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  awsElasticBlockStore:
+    volumeID: vol-0123456789abcdef0
+    fsType: ext4
+
+
+Note: storageClassName: "" makes this a manually managed volume.
+
+Create a PVC
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-static-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: ""
+
+  Must match the PV in size, access mode, and storage class name ("").
+
+
+  Use the PVC in a Pod
+
+  apiVersion: v1
+kind: Pod
+metadata:
+  name: ebs-static-pod
+spec:
+  containers:
+    - name: busybox
+      image: busybox
+      command: [ "sleep", "3600" ]
+      volumeMounts:
+        - name: ebs-vol
+          mountPath: /data
+  volumes:
+    - name: ebs-vol
+      persistentVolumeClaim:
+        claimName: ebs-static-pvc
+
+
+kubectl get pv
+kubectl get pvc
+kubectl describe pvc ebs-static-pvc
+kubectl exec -it ebs-static-pod -- sh
+
+
+cd /data
+touch test.txt
+
+
+ Things to Keep in Mind
+Thing	Detail
+🧠 EBS Zone	Volume & EC2 node must be in same AZ
+📦 Access Mode	Only supports ReadWriteOnce (one node)
+❌ Dynamic Binding	Don't use storageClassName unless you're doing dynamic provisioning
+🔐 IAM	Make sure EC2 nodes have permissions to use EBS volumes
+
+================================================================
+
+helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver/
+helm repo update
+
+helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+  --namespace kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.name=ebs-csi-controller-sa
+=========================================================================
